@@ -58,7 +58,8 @@ enum Desktop {
                 }
                 Prefs.set(key, true, Prefs.windowManager)
             } else {
-                let original = store.object(forKey: savedKey) as? Bool ?? false
+                // 自分で隠していないなら触らない (ユーザーが元々非表示にしている場合を壊さない)
+                guard let original = store.object(forKey: savedKey) as? Bool else { continue }
                 Prefs.set(key, original, Prefs.windowManager)
                 store.removeObject(forKey: savedKey)
             }
@@ -89,6 +90,7 @@ final class HotKey {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var hotKey: HotKey?
+    private var signalSources: [DispatchSourceSignal] = []
     private let defaults = UserDefaults.standard
 
     /// ウィジェットも一緒に隠すか (デフォルト: する)
@@ -111,7 +113,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         modifiers: UInt32(controlKey | optionKey | cmdKey)) { [weak self] in
             self?.toggle()
         }
+        // kill / pkill (SIGTERM) や Ctrl-C (SIGINT) でも通常終了させて元に戻す
+        for sig in [SIGTERM, SIGINT, SIGHUP] {
+            signal(sig, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
+            source.setEventHandler { NSApp.terminate(nil) }
+            source.resume()
+            signalSources.append(source)
+        }
         updateIcon()
+    }
+
+    /// 終了時は必ずデスクトップを表示状態に戻す
+    func applicationWillTerminate(_ notification: Notification) {
+        Desktop.setWidgetsHidden(false)
+        Desktop.setIconsHidden(false)
     }
 
     // 左クリック: 切り替え / 右クリック (or ⌥クリック): メニュー
@@ -143,7 +159,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         login.target = self
         menu.addItem(login)
         menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "終了", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        let quit = NSMenuItem(title: "終了 (デスクトップを表示に戻す)",
+                              action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        quit.target = NSApp
+        menu.addItem(quit)
 
         statusItem.menu = menu
         statusItem.button?.performClick(nil)
